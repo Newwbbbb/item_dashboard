@@ -1,0 +1,162 @@
+# -*- coding: utf-8 -*-
+import re
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+import plotly.express as px
+
+st.set_page_config(
+    page_title="아이템 검색 · 최근 7일 평균구매금액(1개당)",
+    page_icon="🔎",
+    layout="wide",
+)
+
+DATA_PATH_DEFAULT = Path("Data_sample.xlsx")
+
+@st.cache_data(show_spinner=False)
+def load_data(xlsx_path: Path) -> pd.DataFrame:
+    df = pd.read_excel(xlsx_path, engine="openpyxl")
+    df.columns = [str(c).strip() for c in df.columns]
+    required = {"일자", "아이템명", "평균구매금액(1개당)"}
+    missing = required - set(df.columns)
+    if missing:
+        raise KeyError(f"필수 컬럼 누락: {missing}")
+    df["일자"] = pd.to_datetime(df["일자"], errors="coerce")
+    name_series = df["아이템명"].astype(str)
+    df["아이템명_순수"] = name_series.str.replace(r"\(\d+\)$", "", regex=True).str.strip()
+    df["아이템코드"] = name_series.str.extract(r"\((\d+)\)$")[0]
+    return df
+
+@st.cache_data(show_spinner=False)
+def build_index(df: pd.DataFrame) -> pd.DataFrame:
+    grp = df.groupby(["아이템명_순수", "아이템코드"], dropna=False)
+    idx = grp["일자"].agg(days="nunique", first_date="min", last_date="max").reset_index()
+    idx = idx.rename(columns={"아이템명_순수": "item_name", "아이템코드": "item_code"})
+    idx = idx.sort_values(["last_date", "days", "item_name"], ascending=[False, False, True])
+    return idx
+
+def contains_filter(idx: pd.DataFrame, q: str, top_n: int = 100) -> pd.DataFrame:
+    if not q:
+        return idx.head(top_n)
+    mask = (
+        idx["item_name"].str.contains(q, case=False, na=False)
+        | idx["item_code"].fillna("").str.contains(q, case=False, na=False)
+    )
+    res = idx[mask].copy()
+    starts = res["item_name"].str.startswith(q, na=False)
+    res = res.assign(_starts=starts.astype(int))
+    res = res.sort_values(["_starts", "last_date", "days"], ascending=[False, False, False])
+    return res.drop(columns=["_starts"]).head(top_n)
+
+def get_last7_series(df: pd.DataFrame, *, key: str, by: str = "name") -> pd.DataFrame:
+    if by == "code":
+        dsel = df[df["아이템코드"] == key].copy()
+    else:
+        dsel = df[df["아이템명_순수"] == key].copy()
+    if dsel.empty:
+        return pd.DataFrame(columns=["일자", "평균구매금액(1개당)"])
+    max_date = dsel["일자"].max()
+    start_date = max_date - pd.Timedelta(days=6)
+    d7 = dsel[(dsel["일자"] >= start_date) & (dsel["일자"] <= max_date)].copy()
+    ts = (d7.groupby("일자", as_index=False)["평균구매금액(1개당)"].mean().sort_values("일자"))
+    all_days = pd.date_range(start=start_date, end=max_date, freq="D")
+    ts = ts.set_index("일자").reindex(all_days)
+    ts.index.name = "일자"
+    return ts.reset_index()
+
+st.title("🔎 아이템 검색 · 최근 7일 평균구매금액(1개당)")
+st.caption("여러 사용자가 동시에 조회할 수 있는 간단한 웹 앱입니다. 검색 → 선택 → 최근 7일 그래프를 확인하세요.")
+
+with st.sidebar:
+    st.header("데이터")
+    uploaded = st.file_uploader("엑셀 업로드 (.xlsx)", type=["xlsx"], help="컬럼: 일자, 아이템명, 평균구매금액(1개당)")
+    if uploaded:
+        xlsx_path = Path("_uploaded.xlsx")
+        with open(xlsx_path, "wb") as f:
+            f.write(uploaded.read())
+    else:
+        xlsx_path = DATA_PATH_DEFAULT
+        st.write(f"기본 파일 사용: {xlsx_path}")
+
+    st.header("검색")
+    q = st.text_input("검색어 (이름/코드 부분 일치)", value="", placeholder="예) 아스마르, 1990007109, 큐브 …")
+    top_n = st.slider("최대 결과 수", 10, 200, 50, step=10)
+
+try:
+    df = load_data(xlsx_path)
+    idx = build_index(df)
+except Exception as e:
+    st.error(f"데이터를 불러오는 중 오류 발생: {e}")
+    st.stop()
+
+res = contains_filter(idx, q, top_n=top_n)
+res_show = res.rename(columns={"item_name": "아이템명", "item_code": "아이템코드", "days": "관측일수"})[
+    ["아이템명", "아이템코드", "관측일수", "first_date", "last_date"]
+]
+st.subheader("검색 결과")
+st.dataframe(res_show, use_container_width=True, height=360)
+
+if res.empty:
+    st.info("검색 결과가 없습니다. 검색어를 바꿔보세요.")
+    st.stop()
+
+names = res["item_name"].tolist()
+codes = res["item_code"].fillna("").tolist()
+labels = [f"{n} ({c})" if c else n for n, c in zip(names, codes)]
+
+col_sel1, col_sel2 = st.columns([2, 1])
+with col_sel1:
+    sel_label = st.selectbox("그래프로 볼 항목을 선택하세요", labels, index=0)
+with col_sel2:
+    by_code = st.toggle("아이템코드로 선택", value=False, help="체크 시 코드 기준으로 선택합니다.")
+
+sel_idx = labels.index(sel_label)
+sel_name = names[sel_idx]
+sel_code = codes[sel_idx] or None
+
+by = "code" if by_code and sel_code else "name"
+key = sel_code if by == "code" else sel_name
+
+series = get_last7_series(df, key=key, by=by)
+if series.empty:
+    st.warning("선택한 항목의 데이터가 없습니다.")
+    st.stop()
+
+latest = series.dropna().tail(1)["평균구매금액(1개당)"].values[0]
+mean7 = series["평균구매금액(1개당)"].mean()
+first = series.dropna().head(1)["평균구매금액(1개당)"].values[0]
+chg = latest - first
+
+k1, k2, k3 = st.columns(3)
+k1.metric("최신값", f"{int(latest):,}")
+k2.metric("7일 평균", f"{int(mean7):,}")
+k3.metric("7일 증감", f"{int(chg):,}", delta=f"{int(chg):,}")
+
+pretty_title = f"{sel_name} ({sel_code})" if by == "code" and sel_code else sel_name
+fig = px.line(
+    series,
+    x="일자",
+    y="평균구매금액(1개당)",
+    title=f"최근 7일 평균구매금액(1개당) — {pretty_title}",
+)
+fig.update_traces(mode="lines+markers")
+fig.update_layout(
+    yaxis=dict(tickformat=",d"),
+    font=dict(family="Nanum Gothic, Malgun Gothic, Apple SD Gothic Neo, Noto Sans CJK KR, Segoe UI, Arial", size=14),
+    margin=dict(l=10, r=10, t=50, b=10),
+)
+st.plotly_chart(fig, use_container_width=True, theme="streamlit")
+
+csv_bytes = series.to_csv(index=False).encode("utf-8-sig")
+st.download_button("📥 최근 7일 시계열 CSV 다운로드", data=csv_bytes, file_name=f"last7_{pretty_title}.csv", mime="text/csv")
+
+with st.expander("동작 원리/주의사항 보기"):
+    st.markdown(
+        """
+        - **검색**: 아이템명/아이템코드 **부분 일치**로 결과를 보여줍니다.
+        - **최근 7일**: 선택 아이템의 **가장 최근 일자**를 기준으로 *그 날 포함 7일 구간*을 집계합니다.
+        - **중복 로우**가 있으면 같은 날의 값을 **평균**으로 계산합니다.
+        - 데이터셋의 필수 컬럼은 **일자, 아이템명, 평균구매금액(1개당)** 입니다.
+        - 한글 글꼴은 **브라우저 글꼴**을 사용합니다. 환경에 따라 일부 기호/글자가 다르게 보일 수 있습니다.
+        """
+    )
