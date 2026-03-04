@@ -3,10 +3,11 @@
 아이템 검색 · 날짜 구간(시작일~종료일) 평균구매금액(1개당)
 - 사이드바/업로드 제거: 기본 데이터(market_item_data.xlsx)만 사용
 - 상단 한 줄: '아이템 검색' + (우측) '최대 결과 수' / '표시 기간'
-- 검색 결과: 아이템명/아이템코드만 표시, 테두리 + 고정 높이(5행) + 스크롤
+- 검색 결과: 아이템명/아이템코드만 표시, 테두리 + (5개 초과 시) 스크롤
 - 결과 '선택' 클릭 → '그래프로 볼 항목' 즉시 반영(세션 + st.rerun)
+- 클릭한 행 하이라이트(연한 파랑)
 - '아이템 코드로 선택' 기능 제거(항상 이름 기준)
-- '그래프로 볼 항목' 및 멀티 비교의 옵션은 '전체 아이템 목록(마스터)' 기반
+- '그래프로 볼 항목' 및 멀티 비교의 옵션 = '전체 아이템(마스터)' 기준
 필수 컬럼: 일자, 아이템명, 평균구매금액(1개당)
 """
 from pathlib import Path
@@ -28,11 +29,13 @@ DATA_PATH_DEFAULT = Path("market_item_data.xlsx")
 
 # -------------------- 유틸 --------------------
 def _set_selection(name: str, code: Optional[str]):
-    """검색 결과에서 선택 시 세션에 저장 → '그래프로 볼 항목' 기본값으로 반영."""
+    """검색 결과에서 선택 시 세션에 저장 → '그래프로 볼 항목' 기본값으로 즉시 반영."""
     label = f"{name} ({code})" if (code and str(code).strip()) else name
     st.session_state["selected_name"] = name
     st.session_state["selected_code"] = code if code else ""
     st.session_state["selected_label"] = label
+    # selectbox의 key 값도 함께 갱신 → 렌더 직후 바로 반영
+    st.session_state["sel_label"] = label
 
 @st.cache_data(show_spinner=False)
 def load_data(xlsx_path: Path) -> pd.DataFrame:
@@ -130,7 +133,7 @@ def get_multi_series_by_daterange(
 
 # -------------------- 데이터 로드 --------------------
 st.markdown("## 🔎 아이템 검색 · 날짜 구간 평균구매금액(1개당)")
-st.caption("검색과 컨트롤을 한 줄에 배치하고, 결과 박스는 5행 기준 테두리/스크롤이 적용됩니다. 기본 데이터(market_item_data.xlsx) 사용.")
+st.caption("검색/컨트롤 한 줄 배치 · 검색 결과는 5개 초과 시 스크롤 · 클릭 시 그래프/선택 항목 즉시 반영. 기본 데이터(market_item_data.xlsx) 사용.")
 
 try:
     df = load_data(DATA_PATH_DEFAULT)
@@ -168,23 +171,26 @@ with col_dates:
     )
 
 # -------------------- 마스터 옵션(전체 아이템) --------------------
-# ⬅️ '그래프로 볼 항목'은 항상 전체 아이템 목록에서 고르도록 해서, 검색 결과와 무관하게 선택값이 보장되도록 함
 master_names = idx["item_name"].tolist()
 master_codes = idx["item_code"].fillna("").tolist()
 master_labels = [f"{n} ({c})" if c else n for n, c in zip(master_names, master_codes)]
 
-# -------------------- 검색 & 결과(5행 스크롤 + 테두리) --------------------
+# -------------------- 검색 & 결과(5개 초과 시 스크롤 + 테두리 + 하이라이트) --------------------
 res = contains_filter(idx, q_main, top_n=int(top_n))
 res_min = res.rename(columns={"item_name": "아이템명", "item_code": "아이템코드"})[["아이템명", "아이템코드"]]
 
 st.markdown("### 검색 결과")
 
-# 컨테이너 높이/테두리 → 내부 컴포넌트(버튼/컬럼 포함)에 스크롤이 적용
 ROW_H = 42            # 행 하나의 대략적인 높이
-VISIBLE_ROWS = 5      # ✅ 요청: 5개 이상일 때 스크롤
+VISIBLE_ROWS = 5      # ✅ 5개 초과일 때만 스크롤
 box_h = 16 + ROW_H * (VISIBLE_ROWS + 1)   # +헤더
 
-box = st.container(height=box_h, border=True)
+# 결과 개수에 따라 컨테이너 높이 지정(<=5: 높이 지정 X → 스크롤 없음 / >5: 높이 지정 → 스크롤)
+if len(res_min) > VISIBLE_ROWS:
+    box = st.container(height=box_h, border=True)
+else:
+    box = st.container(border=True)
+
 with box:
     # 헤더
     h1, h2, h3 = st.columns([0.55, 0.35, 0.10])
@@ -192,29 +198,48 @@ with box:
     h2.markdown("**아이템코드**")
     h3.markdown("**선택**")
 
+    sel_name_cur = st.session_state.get("selected_name", "")
+    sel_code_cur = st.session_state.get("selected_code", "")
+
     if res_min.empty:
         st.info("검색 결과가 없습니다. 다른 키워드로 시도해 보세요.")
     else:
-        # top_n까지는 모두 렌더링하되, 컨테이너 높이로 스크롤 발생
+        # top_n까지는 모두 렌더링(컨테이너가 스크롤 처리)
         for i, row in res_min.iterrows():
+            # 하이라이트 여부(name + code가 모두 일치하면 가장 정확)
+            row_name = row["아이템명"]
+            row_code = "" if pd.isna(row["아이템코드"]) else str(row["아이템코드"])
+            is_selected = (row_name == sel_name_cur) and (row_code == sel_code_cur)
+
             c1, c2, c3 = st.columns([0.55, 0.35, 0.10])
-            c1.write(row["아이템명"])
-            c2.write("" if pd.isna(row["아이템코드"]) else str(row["아이템코드"]))
+
+            # 선택된 행은 연한 파랑 배경상자 표시
+            if is_selected:
+                c1.markdown(f"<div style='background:#eef6ff;border-radius:6px;padding:6px'>{row_name}</div>", unsafe_allow_html=True)
+                c2.markdown(f"<div style='background:#eef6ff;border-radius:6px;padding:6px'>{row_code}</div>", unsafe_allow_html=True)
+            else:
+                c1.write(row_name)
+                c2.write(row_code)
+
             if c3.button("선택", key=f"pick_{i}"):
-                _set_selection(row["아이템명"], None if pd.isna(row["아이템코드"]) else str(row["아이템코드"]))
-                # 즉시 반영: rerun으로 selectbox 기본값 갱신
+                _set_selection(row_name, row_code if row_code else None)
+                # 즉시 반영: selectbox도 함께 갱신되도록 리런
                 st.rerun()
 
 # -------------------- 모드 선택: 단일 / 멀티 비교 --------------------
 compare_mode = st.checkbox("🔀 멀티 아이템 비교 모드로 보기", value=False)
 
-# 최근 클릭 선택값을 select/multiselect 기본값에 반영
+# 최근 클릭 선택값 → select/multiselect 기본값에 반영
 pre_label = st.session_state.get("selected_label")
 
 if not compare_mode:
     # -------- 단일 모드: '그래프로 볼 항목'은 마스터 옵션 기반 --------
-    default_index = master_labels.index(pre_label) if pre_label in master_labels else 0 if master_labels else 0
-    sel_label = st.selectbox("그래프로 볼 항목", master_labels, index=default_index, key="sel_label")
+    # selectbox는 key='sel_label' 로 상태 유지, 버튼 클릭 시 _set_selection에서 값도 같이 갱신
+    if ("sel_label" not in st.session_state) and master_labels:
+        # 첫 렌더링 시 초기값 지정(선택 이력 없으면 0번)
+        st.session_state["sel_label"] = pre_label if (pre_label in master_labels) else master_labels[0]
+
+    sel_label = st.selectbox("그래프로 볼 항목", master_labels, key="sel_label")
     # 라벨 → 이름 복원
     if " (" in sel_label and sel_label.endswith(")"):
         sel_name = sel_label[: sel_label.rfind(" (")]
