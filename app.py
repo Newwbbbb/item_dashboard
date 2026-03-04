@@ -4,7 +4,7 @@
 - 사이드바: 엑셀 업로드, 검색(부분 일치), 날짜 구간 슬라이더
 - 단일 모드: 1개 아이템
 - 비교 모드: 다중 아이템(최대 8개) + 지수화(첫날=100) 옵션
-- 업로드 파일이 없으면 기본 파일(Data_sample.xlsx) 사용
+- 업로드 파일이 없으면 기본 파일(market_item_data.xlsx) 사용
 필수 컬럼: 일자, 아이템명, 평균구매금액(1개당)
 """
 from pathlib import Path
@@ -21,7 +21,8 @@ st.set_page_config(
     layout="wide",
 )
 
-DATA_PATH_DEFAULT = Path("Data_sample.xlsx")
+# ✅ 기본 데이터 파일명을 market_item_data.xlsx 로 고정
+DATA_PATH_DEFAULT = Path("market_item_data.xlsx")
 
 # -------------------- 데이터 유틸 --------------------
 @st.cache_data(show_spinner=False)
@@ -148,7 +149,7 @@ def get_multi_series_by_daterange(
 
 # -------------------- UI --------------------
 st.title("🔎 아이템 검색 · 날짜 구간 평균구매금액(1개당)")
-st.caption("검색 → (단일 또는 비교) 선택 → 날짜 구간 그래프 확인. 사이드바에서 시작일~종료일을 슬라이더로 조절하세요.")
+st.caption("검색 → (단일 또는 비교) 선택 → 날짜 구간 그래프 확인. 업로드가 없으면 기본 데이터(market_item_data.xlsx)를 사용합니다.")
 
 with st.sidebar:
     st.header("데이터")
@@ -164,7 +165,7 @@ with st.sidebar:
         st.success("업로드된 파일을 사용합니다.")
     else:
         xlsx_path = DATA_PATH_DEFAULT
-        st.info(f"기본 파일 사용: {xlsx_path}")
+        st.info(f"업로드가 없으면 기본 파일 사용: {xlsx_path}")
 
 # 데이터 로드 & 검색/기간 UI
 try:
@@ -252,7 +253,7 @@ if not compare_mode:
     k1, k2, k3 = st.columns(3)
     k1.metric("최신값", f"{int(latest):,}" if latest is not None else "-")
     k2.metric(f"{start_date}~{end_date} 평균", f"{int(meanN):,}" if meanN is not None else "-")
-    k3.metric(f"증감", f"{int(chg):,}" if chg is not None else "-", delta=None if chg is None else f"{int(chg):,}")
+    k3.metric("증감", f"{int(chg):,}" if chg is not None else "-", delta=None if chg is None else f"{int(chg):,}")
 
     # 그래프
     pretty_title = f"{sel_name} ({sel_code})" if by == "code" and sel_code else sel_name
@@ -362,7 +363,6 @@ with st.expander("동작 원리/주의사항 보기"):
 - 같은 날 데이터가 여러 건이면 **일자 평균**으로 계산합니다.  
 - **비교 모드**는 선택한 아이템에 대해 동일한 날짜 구간을 적용합니다.  
 - '지수화(첫날=100)'는 각 아이템의 기간 내 **첫 유효값을 100으로 정규화**하여 상대 변화를 비교합니다.  
-- 필수 컬럼: **일자, 아이템명, 평균구매금액(1개당)**  
-- 업로드 파일이 없으면 같은 폴더의 **Data_sample.xlsx**를 사용합니다.
+- 업로드가 없으면 **기본 파일: market_item_data.xlsx** 를 사용합니다.
 """
     )
