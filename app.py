@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-아이템 검색 + 날짜 구간(시작일~종료일) 평균구매금액(1개당)
-- 사이드바: 엑셀 업로드, 검색(부분 일치), 날짜 구간 슬라이더
-- 단일 모드: 1개 아이템
-- 비교 모드: 다중 아이템(최대 8개) + 지수화(첫날=100) 옵션
-- 업로드 파일이 없으면 기본 파일(market_item_data.xlsx) 사용
+아이템 검색 · 날짜 구간(시작일~종료일) 평균구매금액(1개당)
+- 사이드바 제거, 데이터 업로드 기능 삭제
+- 상단 컨트롤: 최대 결과 수, 날짜 구간 슬라이더
+- 그 아래: 아이템 검색 입력창
+- 검색 결과(아이템명/아이템코드만 표시)에서 '선택' 클릭 → 그래프 항목 자동 반영
+- 단일 모드 & 멀티 비교(지수화 옵션) 지원
+- 기본 데이터 파일: market_item_data.xlsx
 필수 컬럼: 일자, 아이템명, 평균구매금액(1개당)
 """
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -23,6 +25,14 @@ st.set_page_config(
 
 # ✅ 기본 데이터 파일명을 market_item_data.xlsx 로 고정
 DATA_PATH_DEFAULT = Path("market_item_data.xlsx")
+
+# -------------------- 유틸 --------------------
+def _set_selection(name: str, code: Optional[str]):
+    """검색 결과에서 클릭 시, 선택 상태를 세션에 저장."""
+    label = f"{name} ({code})" if (code and str(code).strip()) else name
+    st.session_state["selected_name"] = name
+    st.session_state["selected_code"] = code if code else ""
+    st.session_state["selected_label"] = label
 
 # -------------------- 데이터 유틸 --------------------
 @st.cache_data(show_spinner=False)
@@ -39,9 +49,7 @@ def load_data(xlsx_path: Path) -> pd.DataFrame:
     # 타입/파생 컬럼
     df["일자"] = pd.to_datetime(df["일자"], errors="coerce")
     name_series = df["아이템명"].astype(str)
-    df["아이템명_순수"] = (
-        name_series.str.replace(r"\(\d+\)$", "", regex=True).str.strip()
-    )
+    df["아이템명_순수"] = name_series.str.replace(r"\(\d+\)$", "", regex=True).str.strip()
     df["아이템코드"] = name_series.str.extract(r"\((\d+)\)$")[0]
     return df
 
@@ -147,49 +155,30 @@ def get_multi_series_by_daterange(
 
     return pd.concat(out_list, ignore_index=True)
 
-# -------------------- UI --------------------
-st.title("🔎 아이템 검색 · 날짜 구간 평균구매금액(1개당)")
-st.caption("검색 → (단일 또는 비교) 선택 → 날짜 구간 그래프 확인. 업로드가 없으면 기본 데이터(market_item_data.xlsx)를 사용합니다.")
+# -------------------- 본문 레이아웃 --------------------
+st.markdown("## 🔎 아이템 검색 · 날짜 구간 평균구매금액(1개당)")
+st.caption("상단 컨트롤(최대 결과 수/기간) → 검색 → 결과에서 '선택' 클릭 → 그래프 확인. 기본 데이터(market_item_data.xlsx)를 사용합니다.")
 
-with st.sidebar:
-    st.header("데이터")
-    uploaded = st.file_uploader(
-        "엑셀 업로드 (.xlsx)",
-        type=["xlsx"],
-        help="필수 컬럼: 일자, 아이템명, 평균구매금액(1개당)",
-    )
-    if uploaded:
-        xlsx_path = Path("_uploaded.xlsx")
-        with open(xlsx_path, "wb") as f:
-            f.write(uploaded.read())
-        st.success("업로드된 파일을 사용합니다.")
-    else:
-        xlsx_path = DATA_PATH_DEFAULT
-        st.info(f"업로드가 없으면 기본 파일 사용: {xlsx_path}")
-
-# 데이터 로드 & 검색/기간 UI
+# 데이터 로드
 try:
-    df = load_data(xlsx_path)
+    df = load_data(DATA_PATH_DEFAULT)
     idx = build_index(df)
 except Exception as e:
     st.error(f"데이터를 불러오는 중 오류 발생: {e}")
     st.stop()
 
-with st.sidebar:
-    st.header("검색")
-    q = st.text_input("검색어 (이름/코드 부분 일치)", value="", placeholder="예) 아스마르, 1990007109, 큐브 …")
-    top_n = st.slider("최대 결과 수", 10, 200, 50, step=10)
-
-# 날짜 구간 슬라이더 (데이터 로드 후에 생성)
+# 날짜 범위 기본값 계산
 min_date = pd.to_datetime(df["일자"].min()).date()
 max_date = pd.to_datetime(df["일자"].max()).date()
-# 기본값: 최신일 기준 최근 14일 범위
 _default_start = (pd.to_datetime(max_date) - pd.Timedelta(days=13)).date()
 if _default_start < min_date:
     _default_start = min_date
 
-with st.sidebar:
-    st.header("기간")
+# ---------- 상단 컨트롤(최대 결과 수 + 날짜 구간) ----------
+ctl1, ctl2 = st.columns([1, 4])
+with ctl1:
+    top_n = st.number_input("최대 결과 수", min_value=10, max_value=500, value=50, step=10)
+with ctl2:
     start_date, end_date = st.slider(
         "표시 기간(날짜)",
         min_value=min_date,
@@ -198,41 +187,65 @@ with st.sidebar:
         format="YYYY-MM-DD",
     )
 
-# 검색 결과
-res = contains_filter(idx, q, top_n=top_n)
-res_show = res.rename(
-    columns={"item_name": "아이템명", "item_code": "아이템코드", "days": "관측일수"}
-)[["아이템명", "아이템코드", "관측일수", "first_date", "last_date"]]
+# ---------- 검색 입력창 ----------
+st.subheader("아이템 검색")
+q_main = st.text_input(
+    "아이템명 또는 아이템코드로 검색…",
+    value=st.session_state.get("q_main", ""),
+    placeholder="예) 아스마르, 1990007109, 큐브 …",
+)
+
+# ---------- 검색 수행 & 결과 표 (아이템명/아이템코드만) ----------
+res = contains_filter(idx, q_main, top_n=int(top_n))
+res_min = res.rename(columns={"item_name": "아이템명", "item_code": "아이템코드"})[["아이템명", "아이템코드"]]
 
 st.subheader("검색 결과")
-st.dataframe(res_show, use_container_width=True, height=360)
+# 테이블 헤더
+h1, h2, h3 = st.columns([0.55, 0.35, 0.10])
+h1.markdown("**아이템명**")
+h2.markdown("**아이템코드**")
+h3.markdown("**선택**")
 
-if res.empty:
-    st.info("검색 결과가 없습니다. 검색어를 바꿔보세요.")
-    st.stop()
+if res_min.empty:
+    st.info("검색 결과가 없습니다. 다른 키워드로 시도해 보세요.")
+else:
+    for i, row in res_min.iterrows():
+        c1, c2, c3 = st.columns([0.55, 0.35, 0.10])
+        c1.write(row["아이템명"])
+        c2.write("" if pd.isna(row["아이템코드"]) else str(row["아이템코드"]))
+        if c3.button("선택", key=f"pick_{i}"):
+            _set_selection(row["아이템명"], None if pd.isna(row["아이템코드"]) else str(row["아이템코드"]))
 
-# 후보 준비
+# -------------------- 모드 선택: 단일 / 멀티 비교 --------------------
+compare_mode = st.checkbox("🔀 멀티 아이템 비교 모드로 보기", value=False)
+
+# 후보/라벨 준비
 names = res["item_name"].tolist()
 codes = res["item_code"].fillna("").tolist()
 labels = [f"{n} ({c})" if c else n for n, c in zip(names, codes)]
-name_by_label = {lbl: nm for lbl, nm in zip(labels, names)}  # 멀티 선택용
 
-# -------------------- 모드 선택 --------------------
-compare_mode = st.checkbox("🔀 멀티 아이템 비교 모드로 보기", value=False)
+# 최근 클릭 선택값을 selectbox 기본값에 반영
+pre_label = st.session_state.get("selected_label")
+default_index = labels.index(pre_label) if (pre_label in labels) else (0 if labels else 0)
 
 if not compare_mode:
     # -------- 단일 모드 --------
-    col_sel1, col_sel2 = st.columns([2, 1])
-    with col_sel1:
-        sel_label = st.selectbox("그래프로 볼 항목을 선택하세요", labels, index=0)
-    with col_sel2:
+    sel_col1, sel_col2 = st.columns([2, 1])
+    with sel_col1:
+        sel_label = st.selectbox("그래프로 볼 항목", labels, index=default_index, key="sel_label")
+    with sel_col2:
         by_code = st.toggle("아이템코드로 선택", value=False, help="체크 시 코드 기준으로 선택합니다.")
 
-    sel_idx = labels.index(sel_label)
-    sel_name = names[sel_idx]
+    # selectbox → 이름/코드 복원
+    sel_idx = labels.index(sel_label) if labels else 0
+    sel_name = names[sel_idx] if names else ""
     sel_code = codes[sel_idx] or None
 
-    by = "code" if by_code and sel_code else "name"
+    # 클릭 선택이 있었으면 'by_code'도 자동 설정(코드 존재 시)
+    if pre_label and pre_label == sel_label:
+        by_code = bool(sel_code)
+
+    by = "code" if (by_code and sel_code) else "name"
     key = sel_code if by == "code" else sel_name
 
     series = get_series_by_daterange(
@@ -256,7 +269,7 @@ if not compare_mode:
     k3.metric("증감", f"{int(chg):,}" if chg is not None else "-", delta=None if chg is None else f"{int(chg):,}")
 
     # 그래프
-    pretty_title = f"{sel_name} ({sel_code})" if by == "code" and sel_code else sel_name
+    pretty_title = f"{sel_name} ({sel_code})" if (by == "code" and sel_code) else sel_name
     fig = px.line(
         series,
         x="일자",
@@ -291,13 +304,21 @@ else:
         sel_labels = st.multiselect(
             "비교할 항목을 선택하세요 (최대 8개 권장)",
             labels,
-            default=labels[:2] if len(labels) >= 2 else labels,
+            default=[pre_label] if (pre_label in labels) else (labels[:2] if len(labels) >= 2 else labels),
             max_selections=min(8, len(labels)),
+            key="compare_labels",
         )
     with right:
         norm_mode = st.selectbox("값 표시 방식", ["실제 가격", "지수화(첫날=100)"], index=0)
 
-    sel_names = [name_by_label[lbl] for lbl in sel_labels]
+    sel_names = []
+    for lbl in sel_labels:
+        if " (" in lbl and lbl.endswith(")"):
+            nm = lbl[: lbl.rfind(" (")]
+        else:
+            nm = lbl
+        sel_names.append(nm)
+
     if len(sel_names) == 0:
         st.info("좌측에서 비교할 항목을 1개 이상 선택해 주세요.")
         st.stop()
@@ -354,15 +375,3 @@ else:
             st.dataframe(pd.DataFrame(summary), use_container_width=True)
         else:
             st.info("요약을 계산할 수 있는 데이터가 부족합니다.")
-
-# 도움말
-with st.expander("동작 원리/주의사항 보기"):
-    st.markdown(
-        f"""
-- **표시 기간**: 사이드바에서 선택한 **{start_date} ~ {end_date}** 범위를 '포함'하여 집계합니다.  
-- 같은 날 데이터가 여러 건이면 **일자 평균**으로 계산합니다.  
-- **비교 모드**는 선택한 아이템에 대해 동일한 날짜 구간을 적용합니다.  
-- '지수화(첫날=100)'는 각 아이템의 기간 내 **첫 유효값을 100으로 정규화**하여 상대 변화를 비교합니다.  
-- 업로드가 없으면 **기본 파일: market_item_data.xlsx** 를 사용합니다.
-"""
-    )
