@@ -2,9 +2,9 @@
 """
 아이템 검색 · 날짜 구간(시작일~종료일) 평균구매금액(1개당)
 - 사이드바/업로드 제거: 기본 데이터( market_item_data.xlsx )만 사용
-- 상단 컨트롤(컴팩트): '최대 결과 수' + '표시 기간' 을 검색 입력창 우측에 배치
-- 검색 결과: 아이템명/아이템코드만 표시, 고정 높이 + 스크롤 + 테두리
-- 결과 '선택' 클릭 → '그래프로 볼 항목' 에 자동 반영(세션 동기화)
+- 상단 컨트롤(컴팩트): '아이템 검색' + (우측) '최대 결과 수' / '표시 기간'
+- 검색 결과: 아이템명/아이템코드만 표시, 테두리 + 고정 높이(10행) + 스크롤
+- 결과 '선택' 클릭 → '그래프로 볼 항목' 자동 반영(세션 동기화)
 - '아이템 코드로 선택' 기능 제거(항상 이름 기준)
 - 단일/멀티 비교(지수화 옵션) 유지
 필수 컬럼: 일자, 아이템명, 평균구매금액(1개당)
@@ -37,8 +37,14 @@ def _set_selection(name: str, code: Optional[str]):
 @st.cache_data(show_spinner=False)
 def load_data(xlsx_path: Path) -> pd.DataFrame:
     """엑셀 로드 + 전처리."""
+    if not xlsx_path.exists():
+        raise FileNotFoundError(
+            f"기본 데이터 파일을 찾을 수 없습니다: {xlsx_path.resolve()}\n"
+            f"리포 루트에 '{xlsx_path.name}' 을 업로드해 주세요."
+        )
     df = pd.read_excel(xlsx_path, engine="openpyxl")
     df.columns = [str(c).strip() for c in df.columns]
+
     required = {"일자", "아이템명", "평균구매금액(1개당)"}
     missing = required - set(df.columns)
     if missing:
@@ -124,7 +130,8 @@ def get_multi_series_by_daterange(
 
 # -------------------- 데이터 로드 --------------------
 st.markdown("## 🔎 아이템 검색 · 날짜 구간 평균구매금액(1개당)")
-st.caption("상단 컨트롤(최대 결과 수·기간)과 같은 행에 검색창을 배치했습니다. 결과 박스는 테두리/스크롤이 적용됩니다.")
+st.caption("검색과 컨트롤을 한 줄에 배치하고, 결과 박스는 테두리/스크롤이 적용됩니다. 기본 데이터(market_item_data.xlsx) 사용.")
+
 try:
     df = load_data(DATA_PATH_DEFAULT)
     idx = build_index(df)
@@ -140,7 +147,7 @@ if _default_start < min_date:
     _default_start = min_date
 
 # -------------------- 상단 가로 배치: 검색 + (최대 결과 수 / 기간) --------------------
-# 비율: 검색(6) | 최대(1) | 기간(2)
+# 비율: 검색(6) | 최대(1.2) | 기간(2.2)
 col_search, col_topn, col_dates = st.columns([6, 1.2, 2.2], vertical_alignment="bottom")
 
 with col_search:
@@ -165,26 +172,15 @@ res = contains_filter(idx, q_main, top_n=int(top_n))
 res_min = res.rename(columns={"item_name": "아이템명", "item_code": "아이템코드"})[["아이템명", "아이템코드"]]
 
 st.markdown("### 검색 결과")
-# 결과 컨테이너(테두리 + 고정 높이 + 스크롤)
-row_h = 42               # 대략 한 행 높이
-visible_rows = 10        # 요청: 최대 10개 높이로 보이도록
-box_h = 16 + row_h*(visible_rows+1)  # 헤더 포함 대략 높이
 
-with st.container():
-    st.markdown(
-        f"""
-        <div style="
-            border:1px solid #d0d7e2;
-            border-radius:8px;
-            padding:8px 8px 4px 8px;
-            max-height:{box_h}px;
-            overflow-y:auto;
-            background:#fbfdff;
-        ">
-        """,
-        unsafe_allow_html=True,
-    )
-    # 테이블 헤더
+# 컨테이너 높이/테두리 → 내부 컴포넌트(버튼/컬럼 포함)에 스크롤이 적용됨
+ROW_H = 42                # 행 하나의 대략적인 높이
+VISIBLE_ROWS = 10         # 최대 10행 높이만 보이게
+box_h = 16 + ROW_H * (VISIBLE_ROWS + 1)   # +헤더
+
+box = st.container(height=box_h, border=True)   # ⬅️ 핵심: 스트림릿 컨테이너에 높이/테두리 적용
+with box:
+    # 헤더
     h1, h2, h3 = st.columns([0.55, 0.35, 0.10])
     h1.markdown("**아이템명**")
     h2.markdown("**아이템코드**")
@@ -193,14 +189,13 @@ with st.container():
     if res_min.empty:
         st.info("검색 결과가 없습니다. 다른 키워드로 시도해 보세요.")
     else:
-        # 전체 결과는 top_n까지 허용하되, 박스 높이는 10행 기준으로 스크롤
+        # top_n까지는 모두 렌더링하되, 컨테이너 높이로 스크롤 발생
         for i, row in res_min.iterrows():
             c1, c2, c3 = st.columns([0.55, 0.35, 0.10])
             c1.write(row["아이템명"])
             c2.write("" if pd.isna(row["아이템코드"]) else str(row["아이템코드"]))
             if c3.button("선택", key=f"pick_{i}"):
                 _set_selection(row["아이템명"], None if pd.isna(row["아이템코드"]) else str(row["아이템코드"]))
-    st.markdown("</div>", unsafe_allow_html=True)
 
 # -------------------- 모드 선택: 단일 / 멀티 비교 --------------------
 compare_mode = st.checkbox("🔀 멀티 아이템 비교 모드로 보기", value=False)
