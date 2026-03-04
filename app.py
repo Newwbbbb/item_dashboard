@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 아이템 검색 · 날짜 구간(시작일~종료일) 평균구매금액(1개당)
-- 사이드바/업로드 제거: 기본 데이터( market_item_data.xlsx )만 사용
-- 상단 컨트롤(컴팩트): '아이템 검색' + (우측) '최대 결과 수' / '표시 기간'
-- 검색 결과: 아이템명/아이템코드만 표시, 테두리 + 고정 높이(10행) + 스크롤
-- 결과 '선택' 클릭 → '그래프로 볼 항목' 자동 반영(세션 동기화)
+- 사이드바/업로드 제거: 기본 데이터(market_item_data.xlsx)만 사용
+- 상단 한 줄: '아이템 검색' + (우측) '최대 결과 수' / '표시 기간'
+- 검색 결과: 아이템명/아이템코드만 표시, 테두리 + 고정 높이(5행) + 스크롤
+- 결과 '선택' 클릭 → '그래프로 볼 항목' 즉시 반영(세션 + st.rerun)
 - '아이템 코드로 선택' 기능 제거(항상 이름 기준)
-- 단일/멀티 비교(지수화 옵션) 유지
+- '그래프로 볼 항목' 및 멀티 비교의 옵션은 '전체 아이템 목록(마스터)' 기반
 필수 컬럼: 일자, 아이템명, 평균구매금액(1개당)
 """
 from pathlib import Path
@@ -23,7 +23,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# ✅ 기본 데이터 파일(루트)에 최신본 유지
+# ✅ 기본 데이터 파일(리포 루트)
 DATA_PATH_DEFAULT = Path("market_item_data.xlsx")
 
 # -------------------- 유틸 --------------------
@@ -130,7 +130,7 @@ def get_multi_series_by_daterange(
 
 # -------------------- 데이터 로드 --------------------
 st.markdown("## 🔎 아이템 검색 · 날짜 구간 평균구매금액(1개당)")
-st.caption("검색과 컨트롤을 한 줄에 배치하고, 결과 박스는 테두리/스크롤이 적용됩니다. 기본 데이터(market_item_data.xlsx) 사용.")
+st.caption("검색과 컨트롤을 한 줄에 배치하고, 결과 박스는 5행 기준 테두리/스크롤이 적용됩니다. 기본 데이터(market_item_data.xlsx) 사용.")
 
 try:
     df = load_data(DATA_PATH_DEFAULT)
@@ -167,18 +167,24 @@ with col_dates:
         format="YYYY-MM-DD",
     )
 
-# -------------------- 검색 & 결과(스크롤/테두리/최대 10행 높이) --------------------
+# -------------------- 마스터 옵션(전체 아이템) --------------------
+# ⬅️ '그래프로 볼 항목'은 항상 전체 아이템 목록에서 고르도록 해서, 검색 결과와 무관하게 선택값이 보장되도록 함
+master_names = idx["item_name"].tolist()
+master_codes = idx["item_code"].fillna("").tolist()
+master_labels = [f"{n} ({c})" if c else n for n, c in zip(master_names, master_codes)]
+
+# -------------------- 검색 & 결과(5행 스크롤 + 테두리) --------------------
 res = contains_filter(idx, q_main, top_n=int(top_n))
 res_min = res.rename(columns={"item_name": "아이템명", "item_code": "아이템코드"})[["아이템명", "아이템코드"]]
 
 st.markdown("### 검색 결과")
 
-# 컨테이너 높이/테두리 → 내부 컴포넌트(버튼/컬럼 포함)에 스크롤이 적용됨
-ROW_H = 42                # 행 하나의 대략적인 높이
-VISIBLE_ROWS = 10         # 최대 10행 높이만 보이게
+# 컨테이너 높이/테두리 → 내부 컴포넌트(버튼/컬럼 포함)에 스크롤이 적용
+ROW_H = 42            # 행 하나의 대략적인 높이
+VISIBLE_ROWS = 5      # ✅ 요청: 5개 이상일 때 스크롤
 box_h = 16 + ROW_H * (VISIBLE_ROWS + 1)   # +헤더
 
-box = st.container(height=box_h, border=True)   # ⬅️ 핵심: 스트림릿 컨테이너에 높이/테두리 적용
+box = st.container(height=box_h, border=True)
 with box:
     # 헤더
     h1, h2, h3 = st.columns([0.55, 0.35, 0.10])
@@ -196,31 +202,26 @@ with box:
             c2.write("" if pd.isna(row["아이템코드"]) else str(row["아이템코드"]))
             if c3.button("선택", key=f"pick_{i}"):
                 _set_selection(row["아이템명"], None if pd.isna(row["아이템코드"]) else str(row["아이템코드"]))
+                # 즉시 반영: rerun으로 selectbox 기본값 갱신
+                st.rerun()
 
 # -------------------- 모드 선택: 단일 / 멀티 비교 --------------------
 compare_mode = st.checkbox("🔀 멀티 아이템 비교 모드로 보기", value=False)
 
-# 후보/라벨
-names = res["item_name"].tolist()
-codes = res["item_code"].fillna("").tolist()
-labels = [f"{n} ({c})" if c else n for n, c in zip(names, codes)]
-
-# 최근 클릭 선택값을 selectbox 기본값에 반영
+# 최근 클릭 선택값을 select/multiselect 기본값에 반영
 pre_label = st.session_state.get("selected_label")
-default_index = labels.index(pre_label) if (pre_label in labels) else (0 if labels else 0)
 
 if not compare_mode:
-    # -------- 단일 모드: 코드 선택 제거(항상 이름 기준) --------
-    sel_label = st.selectbox("그래프로 볼 항목", labels, index=default_index, key="sel_label")
+    # -------- 단일 모드: '그래프로 볼 항목'은 마스터 옵션 기반 --------
+    default_index = master_labels.index(pre_label) if pre_label in master_labels else 0 if master_labels else 0
+    sel_label = st.selectbox("그래프로 볼 항목", master_labels, index=default_index, key="sel_label")
     # 라벨 → 이름 복원
     if " (" in sel_label and sel_label.endswith(")"):
         sel_name = sel_label[: sel_label.rfind(" (")]
     else:
         sel_name = sel_label
 
-    series = get_series_by_daterange(
-        df, key=sel_name, start_date=start_date, end_date=end_date
-    )
+    series = get_series_by_daterange(df, key=sel_name, start_date=start_date, end_date=end_date)
     if series.empty:
         st.warning("선택한 항목의 데이터가 없습니다.")
         st.stop()
@@ -261,18 +262,17 @@ if not compare_mode:
     )
 
 else:
-    # -------- 비교 모드 --------
-    left, right = st.columns([2, 1])
-    with left:
-        sel_labels = st.multiselect(
-            "비교할 항목을 선택하세요 (최대 8개 권장)",
-            labels,
-            default=[pre_label] if (pre_label in labels) else (labels[:2] if len(labels) >= 2 else labels),
-            max_selections=min(8, len(labels)),
-            key="compare_labels",
-        )
-    with right:
-        norm_mode = st.selectbox("값 표시 방식", ["실제 가격", "지수화(첫날=100)"], index=0)
+    # -------- 비교 모드: 멀티 옵션도 마스터 기반 --------
+    default_multi = [pre_label] if (pre_label in master_labels) else (master_labels[:2] if len(master_labels) >= 2 else master_labels)
+    sel_labels = st.multiselect(
+        "비교할 항목을 선택하세요 (최대 8개 권장)",
+        master_labels,
+        default=default_multi,
+        max_selections=min(8, len(master_labels)),
+        key="compare_labels",
+    )
+
+    norm_mode = st.selectbox("값 표시 방식", ["실제 가격", "지수화(첫날=100)"], index=0)
 
     sel_names = []
     for lbl in sel_labels:
@@ -283,7 +283,7 @@ else:
         sel_names.append(nm)
 
     if len(sel_names) == 0:
-        st.info("좌측에서 비교할 항목을 1개 이상 선택해 주세요.")
+        st.info("비교할 항목을 1개 이상 선택해 주세요.")
         st.stop()
 
     series_multi = get_multi_series_by_daterange(
