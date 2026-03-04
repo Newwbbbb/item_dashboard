@@ -1,20 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-아이템 검색 + 최근 N일(기본 14일) 평균구매금액(1개당)
-- 단일 모드: 1개 아이템 선택
-- 비교 모드: 다중 아이템(최대 8개) 비교 + 지수화(첫날=100) 옵션
-- 아이템명/아이템코드 부분 검색
-- 업로드한 엑셀 또는 기본 파일(Data_sample.xlsx) 사용
+아이템 검색 + 날짜 구간(시작일~종료일) 평균구매금액(1개당)
+- 사이드바: 엑셀 업로드, 검색(부분 일치), 날짜 구간 슬라이더
+- 단일 모드: 1개 아이템
+- 비교 모드: 다중 아이템(최대 8개) + 지수화(첫날=100) 옵션
+- 업로드 파일이 없으면 기본 파일(Data_sample.xlsx) 사용
 필수 컬럼: 일자, 아이템명, 평균구매금액(1개당)
 """
 from pathlib import Path
+from typing import List
+
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 
 # -------------------- 페이지 설정 --------------------
 st.set_page_config(
-    page_title="아이템 검색 · 최근 N일 평균구매금액(1개당)",
+    page_title="아이템 검색 · 날짜 구간 평균구매금액(1개당)",
     page_icon="🔎",
     layout="wide",
 )
@@ -68,10 +70,11 @@ def contains_filter(idx: pd.DataFrame, q: str, top_n: int = 100) -> pd.DataFrame
     return res.drop(columns=["_starts"]).head(top_n)
 
 
-def get_lastN_series(
-    df: pd.DataFrame, *, key: str, by: str = "name", days: int = 14
+def get_series_by_daterange(
+    df: pd.DataFrame, *, key: str, by: str = "name",
+    start_date: pd.Timestamp, end_date: pd.Timestamp
 ) -> pd.DataFrame:
-    """선택된 아이템의 최근 N일(오늘 포함) 평균구매금액(1개당) 시계열."""
+    """선택된 아이템의 '날짜 구간' 평균구매금액(1개당) 시계열."""
     if by == "code":
         dsel = df[df["아이템코드"] == key].copy()
     else:
@@ -80,56 +83,51 @@ def get_lastN_series(
     if dsel.empty:
         return pd.DataFrame(columns=["일자", "평균구매금액(1개당)"])
 
-    max_date = dsel["일자"].max()
-    # '오늘 포함 N일' → 시작일은 max_date - (N-1)
-    start_date = max_date - pd.Timedelta(days=days - 1)
-
-    dN = dsel[(dsel["일자"] >= start_date) & (dsel["일자"] <= max_date)].copy()
+    s = pd.to_datetime(start_date)
+    e = pd.to_datetime(end_date)
+    dN = dsel[(dsel["일자"] >= s) & (dsel["일자"] <= e)].copy()
 
     ts = (
         dN.groupby("일자", as_index=False)["평균구매금액(1개당)"]
-        .mean()
-        .sort_values("일자")
+          .mean()
+          .sort_values("일자")
     )
-    # 누락 일자도 보이도록 전체 날짜 인덱스 생성
-    all_days = pd.date_range(start=start_date, end=max_date, freq="D")
+
+    # 누락 일자 보이도록 전체 날짜 인덱스
+    all_days = pd.date_range(start=s, end=e, freq="D")
     ts = ts.set_index("일자").reindex(all_days)
     ts.index.name = "일자"
     return ts.reset_index()
 
 
-def get_lastN_multi_series(
+def get_multi_series_by_daterange(
     df: pd.DataFrame,
-    *,
-    names: list[str],
-    days: int = 14,
-    normalize: str = "none",  # "none" | "index100"
+    *, names: List[str],
+    start_date: pd.Timestamp, end_date: pd.Timestamp,
+    normalize: str = "none"  # "none" | "index100"
 ) -> pd.DataFrame:
     """
-    멀티 아이템의 최근 N일 시계열(롱 포맷).
-    - 기간은 '선택된 아이템 중 가장 최신 일자' 기준으로 동일 기간 적용
-    - normalize="index100"이면 각 아이템 첫날=100으로 지수화
+    멀티 아이템의 '날짜 구간' 시계열(롱 포맷).
     반환 컬럼: [일자, 값, 아이템]
     """
     if not names:
         return pd.DataFrame(columns=["일자", "값", "아이템"])
 
-    # 선택된 아이템들의 전체 최신일 기준으로 동일 창 생성
-    latest = df.loc[df["아이템명_순수"].isin(names), "일자"].max()
-    start_date = latest - pd.Timedelta(days=days - 1)
-    all_days = pd.date_range(start=start_date, end=latest, freq="D")
+    s = pd.to_datetime(start_date)
+    e = pd.to_datetime(end_date)
+    all_days = pd.date_range(start=s, end=e, freq="D")
 
     out_list = []
     for nm in names:
-        dsel = df[(df["아이템명_순수"] == nm) & (df["일자"] >= start_date) & (df["일자"] <= latest)]
+        dsel = df[(df["아이템명_순수"] == nm) & (df["일자"] >= s) & (df["일자"] <= e)]
         if dsel.empty:
             continue
         ts = (
             dsel.groupby("일자", as_index=False)["평균구매금액(1개당)"]
-            .mean()
-            .sort_values("일자")
-            .set_index("일자")
-            .reindex(all_days)
+                .mean()
+                .sort_values("일자")
+                .set_index("일자")
+                .reindex(all_days)
         )
         ts.columns = ["값"]
         ts.index.name = "일자"
@@ -149,8 +147,8 @@ def get_lastN_multi_series(
     return pd.concat(out_list, ignore_index=True)
 
 # -------------------- UI --------------------
-st.title("🔎 아이템 검색 · 최근 N일 평균구매금액(1개당)")
-st.caption("검색 → (단일 또는 비교) 선택 → 최근 N일 그래프 확인. 사이드바에서 기간/옵션을 조절할 수 있습니다.")
+st.title("🔎 아이템 검색 · 날짜 구간 평균구매금액(1개당)")
+st.caption("검색 → (단일 또는 비교) 선택 → 날짜 구간 그래프 확인. 사이드바에서 시작일~종료일을 슬라이더로 조절하세요.")
 
 with st.sidebar:
     st.header("데이터")
@@ -168,20 +166,36 @@ with st.sidebar:
         xlsx_path = DATA_PATH_DEFAULT
         st.info(f"기본 파일 사용: {xlsx_path}")
 
-    st.header("검색")
-    q = st.text_input("검색어 (이름/코드 부분 일치)", value="", placeholder="예) 아스마르, 1990007109, 큐브 …")
-    top_n = st.slider("최대 결과 수", 10, 200, 50, step=10)
-
-    st.header("기간")
-    days = st.slider("표시 기간(일)", min_value=7, max_value=60, value=14, step=1)
-
-# 데이터 로드
+# 데이터 로드 & 검색/기간 UI
 try:
     df = load_data(xlsx_path)
     idx = build_index(df)
 except Exception as e:
     st.error(f"데이터를 불러오는 중 오류 발생: {e}")
     st.stop()
+
+with st.sidebar:
+    st.header("검색")
+    q = st.text_input("검색어 (이름/코드 부분 일치)", value="", placeholder="예) 아스마르, 1990007109, 큐브 …")
+    top_n = st.slider("최대 결과 수", 10, 200, 50, step=10)
+
+# 날짜 구간 슬라이더 (데이터 로드 후에 생성)
+min_date = pd.to_datetime(df["일자"].min()).date()
+max_date = pd.to_datetime(df["일자"].max()).date()
+# 기본값: 최신일 기준 최근 14일 범위
+_default_start = (pd.to_datetime(max_date) - pd.Timedelta(days=13)).date()
+if _default_start < min_date:
+    _default_start = min_date
+
+with st.sidebar:
+    st.header("기간")
+    start_date, end_date = st.slider(
+        "표시 기간(날짜)",
+        min_value=min_date,
+        max_value=max_date,
+        value=(_default_start, max_date),
+        format="YYYY-MM-DD",
+    )
 
 # 검색 결과
 res = contains_filter(idx, q, top_n=top_n)
@@ -220,7 +234,10 @@ if not compare_mode:
     by = "code" if by_code and sel_code else "name"
     key = sel_code if by == "code" else sel_name
 
-    series = get_lastN_series(df, key=key, by=by, days=days)
+    series = get_series_by_daterange(
+        df, key=key, by=by,
+        start_date=start_date, end_date=end_date
+    )
     if series.empty:
         st.warning("선택한 항목의 데이터가 없습니다.")
         st.stop()
@@ -234,8 +251,8 @@ if not compare_mode:
 
     k1, k2, k3 = st.columns(3)
     k1.metric("최신값", f"{int(latest):,}" if latest is not None else "-")
-    k2.metric(f"{days}일 평균", f"{int(meanN):,}" if meanN is not None else "-")
-    k3.metric(f"{days}일 증감", f"{int(chg):,}" if chg is not None else "-", delta=None if chg is None else f"{int(chg):,}")
+    k2.metric(f"{start_date}~{end_date} 평균", f"{int(meanN):,}" if meanN is not None else "-")
+    k3.metric(f"증감", f"{int(chg):,}" if chg is not None else "-", delta=None if chg is None else f"{int(chg):,}")
 
     # 그래프
     pretty_title = f"{sel_name} ({sel_code})" if by == "code" and sel_code else sel_name
@@ -243,7 +260,7 @@ if not compare_mode:
         series,
         x="일자",
         y="평균구매금액(1개당)",
-        title=f"최근 {days}일 평균구매금액(1개당) — {pretty_title}",
+        title=f"{start_date} ~ {end_date} 평균구매금액(1개당) — {pretty_title}",
     )
     fig.update_traces(mode="lines+markers")
     fig.update_layout(
@@ -262,7 +279,7 @@ if not compare_mode:
     st.download_button(
         "📥 시계열 CSV 다운로드",
         data=csv_bytes,
-        file_name=f"last{days}_{pretty_title}.csv",
+        file_name=f"{start_date}_{end_date}_{pretty_title}.csv",
         mime="text/csv",
     )
 
@@ -284,10 +301,10 @@ else:
         st.info("좌측에서 비교할 항목을 1개 이상 선택해 주세요.")
         st.stop()
 
-    series_multi = get_lastN_multi_series(
+    series_multi = get_multi_series_by_daterange(
         df,
         names=sel_names,
-        days=days,
+        start_date=start_date, end_date=end_date,
         normalize="index100" if norm_mode.startswith("지수화") else "none",
     )
     if series_multi.empty:
@@ -303,7 +320,7 @@ else:
         y="값",
         color="아이템",
         markers=True,
-        title=f"최근 {days}일 멀티 아이템 비교 {title_suffix}",
+        title=f"{start_date} ~ {end_date} 멀티 아이템 비교 {title_suffix}",
     )
     fig.update_layout(
         yaxis=dict(tickformat=",.0f"),
@@ -317,20 +334,20 @@ else:
     )
     st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
-    # 간단 요약 표 (최신값/시작값/증감)
+    # 간단 요약 표 (시작값/최신값/증감)
     with st.expander("📊 비교 요약 (기간 내 시작값/최신값/증감)"):
-        # 각 아이템별 시작/끝 값 계산
         summary = []
         for nm, sub in series_multi.groupby("아이템"):
             sub_valid = sub.dropna(subset=["값"]).sort_values("일자")
             if sub_valid.empty:
                 continue
-            start_v = sub_valid["값"].iloc[0]
-            end_v = sub_valid["값"].iloc[-1]
+            start_v = float(sub_valid["값"].iloc[0])
+            end_v = float(sub_valid["값"].iloc[-1])
             diff = end_v - start_v
-            pct = (diff / start_v * 100) if start_v != 0 else None
+            pct = (diff / start_v * 100.0) if start_v != 0 else None
             summary.append(
-                {"아이템": nm, "시작값": round(start_v, 2), "최신값": round(end_v, 2), "증감": round(diff, 2), "증감(%)": None if pct is None else round(pct, 2)}
+                {"아이템": nm, "시작값": round(start_v, 2), "최신값": round(end_v, 2),
+                 "증감": round(diff, 2), "증감(%)": None if pct is None else round(pct, 2)}
             )
         if summary:
             st.dataframe(pd.DataFrame(summary), use_container_width=True)
@@ -341,11 +358,11 @@ else:
 with st.expander("동작 원리/주의사항 보기"):
     st.markdown(
         f"""
-- **표시 기간**: 선택한 **최근 {days}일**을 '가장 최신 일자 포함'으로 집계합니다.  
+- **표시 기간**: 사이드바에서 선택한 **{start_date} ~ {end_date}** 범위를 '포함'하여 집계합니다.  
 - 같은 날 데이터가 여러 건이면 **일자 평균**으로 계산합니다.  
-- **비교 모드**는 선택한 아이템들의 전체 최신일을 기준으로 **동일한 기간 창**을 적용합니다.  
-- '지수화(첫날=100)'는 각 아이템의 기간 내 **첫 유효값을 100으로 정규화**하여 상대 변화를 직관적으로 비교합니다.  
+- **비교 모드**는 선택한 아이템에 대해 동일한 날짜 구간을 적용합니다.  
+- '지수화(첫날=100)'는 각 아이템의 기간 내 **첫 유효값을 100으로 정규화**하여 상대 변화를 비교합니다.  
 - 필수 컬럼: **일자, 아이템명, 평균구매금액(1개당)**  
-- 업로드 파일을 제공하지 않으면 같은 폴더의 **Data_sample.xlsx**를 사용합니다.
+- 업로드 파일이 없으면 같은 폴더의 **Data_sample.xlsx**를 사용합니다.
 """
     )
